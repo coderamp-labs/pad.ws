@@ -156,9 +156,10 @@ class CanvasWorker:
     async def _release_pad_worker(self, pad_id: UUID) -> None:
         """Release the worker assignment for a pad."""
         try:
-            # Get the pad using proper session management and clear the worker assignment
+            # Get the pad using proper session management and clear the worker assignment.
+            # ensure_worker=False: get_by_id must not restart processing we are stopping (#103).
             async with async_session() as session:
-                pad = await Pad.get_by_id(session, pad_id)
+                pad = await Pad.get_by_id(session, pad_id, ensure_worker=False)
                 
                 if pad and pad.worker_id == self.worker_id:
                     # Only clear if this worker is actually assigned to the pad
@@ -439,8 +440,8 @@ class CanvasWorker:
         try:
             # Create database session and save using Pad domain
             async with async_session() as session:
-                # Get the pad from database (this will also check cache first)
-                pad = await Pad.get_by_id(session, pad_id)
+                # ensure_worker=False: loading for save must not (re)start the worker (#103)
+                pad = await Pad.get_by_id(session, pad_id, ensure_worker=False)
                 
                 if not pad:
                     print(f"Pad {pad_id} not found in database, skipping save")

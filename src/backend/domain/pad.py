@@ -143,21 +143,33 @@ class Pad:
             return None
 
     @classmethod
-    async def get_by_id(cls, session: AsyncSession, pad_id: UUID) -> Optional['Pad']:
-        """Get a pad by ID, first trying Redis cache then falling back to database"""
+    async def get_by_id(
+        cls,
+        session: AsyncSession,
+        pad_id: UUID,
+        ensure_worker: bool = True,
+    ) -> Optional['Pad']:
+        """Get a pad by ID, first trying Redis cache then falling back to database.
+
+        Pass ensure_worker=False when loading a pad from the canvas worker itself
+        (save / release). Otherwise get_by_id would call ensure_worker and
+        re-start processing for a pad that is being shut down or deleted (#103).
+        """
         redis = await RedisClient.get_instance()
         
         # Try to get from cache first
         pad = await cls.from_redis(redis, pad_id)
         if pad:
-            await pad.ensure_worker()
+            if ensure_worker:
+                await pad.ensure_worker()
             return pad
             
         # Fall back to database
         store = await PadStore.get_by_id(session, pad_id)
         if store:
             pad = cls.from_store(store, redis)
-            await pad.ensure_worker()
+            if ensure_worker:
+                await pad.ensure_worker()
             await pad.cache()
             return pad
         return None
@@ -329,13 +341,17 @@ class Pad:
         await self.cache()
 
     async def release_worker(self) -> None:
-        """Release the worker from this pad"""
-        if self.worker_id:
-            from workers.canvas_worker import CanvasWorker
-            canvas_worker = await CanvasWorker.get_instance()
-            await canvas_worker.stop_processing_pad(self.id)
-            
-            old_worker_id = self.worker_id
+        """Stop canvas processing for this pad and clear the worker assignment.
+
+        Always call stop_processing_pad: worker_id is cache-only and may be
+        empty even while the pad is still in the worker's active set (#103).
+        """
+        from workers.canvas_worker import CanvasWorker
+        canvas_worker = await CanvasWorker.get_instance()
+        await canvas_worker.stop_processing_pad(self.id)
+
+        old_worker_id = self.worker_id
+        if old_worker_id:
             self.worker_id = None
             await self.cache()
             print(f"Released worker {old_worker_id[:8]} from pad {self.id}")
